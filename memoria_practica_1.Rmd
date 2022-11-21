@@ -53,6 +53,7 @@ library(paradox)
 library(mlr3tuning)
 library(mlr3viz)
 library(mlr3pipelines)
+library(NADIA)
 datos_disp <- readRDS("./datos/disp_21.rds")
 datos_compet <- readRDS("./datos/compet_21.rds")
 ```
@@ -94,7 +95,6 @@ uswrf\_sfc & Numérica continua & Radiación ascendente de onda corta en la supe
 \section{Análisis Exploratorio de Datos}
 Utilizaremos el paquete `mlr3`, por lo que antes de llevar a cabo las particiones de entrenamiento y validación debemos crear una \emph{task}:
 ```{r}
-datos_disp
 practica_1_task <- as_task_regr(datos_disp, target = "salida", id = "radiacion")
 practica_1_task$print()
 practica_1_task$feature_types
@@ -145,7 +145,7 @@ practica_1_task <- as_task_regr(datos_disp, target = "salida", id = "radiacion")
 
 
 \subsection{Variable respuesta}
-A continuación graficaremos la variable respuesta en el tiempo. Para ello debemos generar un vector de fechas diarias entre los años 1994 y 2006 (sin tener en cuenta)
+A continuación graficaremos la variable respuesta en el tiempo:
 ```{r}
 vector_indicador <- 1:nrow(datos_disp)
 datos_grafico_respuesta <- data.frame(indice = vector_indicador, salida = datos_disp$salida) 
@@ -201,6 +201,16 @@ task_train <- practica_1_task$clone()$filter(id_train)
 task_test  <- practica_1_task$clone()$filter(id_test)
 ```
 
+\subsection{Métodos de escalado}
+\subsection{Métodos de escalado}
+\subsubsection{Normalización de los datos}
+Eliminamos las constantes, normalizamos los datos y hacemos una codificación \emph{one-hot} de las variables cualitativas:
+```{r}
+preproc_inicial <- po("removeconstants") %>>% po("encode")
+practica_1_task <- preproc_inicial$train(practica_1_task)[[1]]
+```
+
+
 \subsection{Métodos de imputación multivariante}
 En esta sección usaremos distintos métodos de imputación multivariante ya que disponemos de datos multivariantes, tanto variables continuas, como categóricas, etc.
 \subsubsection{Imputación mediante AMELIA (\emph{Multiple Imputation of Incomplete Multivariate Data})}
@@ -231,81 +241,81 @@ El algoritmo MICE puede ser dividido en 4 grandes pasos:
 El número de ciclos a realizarse puede ser escogido por el investigador, aunque generalmente se llevan a cabo 10. La idea es que al final de los ciclos, la distribución de los parámetros que gobiernan las imputaciones (por ejemplo los coeficientes de los modelos de regresión) deben haber convergido, en el sentido de volverse estables.
 
 
-```{r}
-poe = po("encode")
+```{r, warning = FALSE, error = TRUE}
+imp <- PipeOpMice$new()
+# learner 
+learner <- lrn('regr.kknn')
 
-# poe is initialized with encoding: "one-hot"
-poe$train(list(practica_1_task))[[1]]$data()
-```
+graph <- imp %>>% po(learner)
 
-Vamos a aplicarlo a los datos y a calcular el error de test para un modelo de \emph{K Nearest Neighbour}. Primero convertiremos todas las variables categóricas en binarias mediante \emph{one-hot encoding}:
-```{r}
-# Definimos la parte de preproceso
-poe = po("encode")
-# Creating Graph
-graph_mice <- PipeOpMice$new() %>>% lrn('regr.fnn')
-# Creating Graph Learners
-Learner_mice <-  as_learner(GraphLearner$new(graph_mice))
-
-graph_mice <- poe %>>% po(Learner_mice)
-# Cross-Validation
-res_desc <- rsmp("holdout", ratio = 2/3)
+graph_learner <- GraphLearner$new(graph, id = 'mice.learner')
+graph_learner$id <-  'mice.learner'
+# resampling 
 set.seed(100430509)
-res_desc$instantiate(practica_1_task)
-rr_mice <- resample(practica_1_task, Learner_mice, resampling = res_desc)
-
-# Compering accuracy
-rr_mice$aggregate(msr('regr.rae'))
+knn_resample <- resample(practica_1_task, graph_learner, desc_inner)
+knn_rae <- knn_resample$aggregate(msr("regr.rae"))
+print(knn_rae)
 ```
+Parece que uno de los sistemas de ecuaciones es singular, por lo que el programa no encuentra solución, y por ello el algoritmo no nos es útil.
+
+\subsubsection{missForest}
+Se trata de un procedimiento que \emph{random forest} para predecir el valor de los datos faltantes:
+```{r, warning = FALSE}
+imp <- PipeOpmissForest$new()
+# learner 
+learner <- lrn('regr.kknn')
+
+graph <- imp %>>%  learner
+
+graph_learner <- GraphLearner$new(graph, id = 'missForest.learner')
+graph_learner$id <-  'missForest.learner'
+# resampling 
+set.seed(100430509)
+knn_resample <- resample(practica_1_task, graph_learner, desc_inner)
+knn_rae <- knn_resample$aggregate(msr("regr.rae"))
+print(knn_rae)
+```
+
+
+\subsubsection{Miss Ranger}
+Utilizaremos el algoritmo `MissRanger`, que es una versión mejorada de `MissForest` en la que se añade el emparejamiento predictivo de medias entre iteraciones de los random forest. Esto evita en primer lugar imputación con valores que no estén presentes en los datos y en segundo lugar, el emparejamiento predictivo de medias intenta incrementar la varianza de las distribuciones condicionales para alcanzar un nivel realista.
+
+```{r, warning = FALSE}
+imp <- PipeOpmissRanger$new()
+# learner 
+learner <- lrn('regr.kknn')
+
+graph <- imp %>>% learner
+
+graph_learner <- GraphLearner$new(graph, id = 'missRanger.learner')
+graph_learner$id <-  'missRanger.learner'
+# resampling 
+set.seed(100430509)
+knn_resample <- resample(practica_1_task, graph_learner, desc_inner)
+knn_rae <- knn_resample$aggregate(msr("regr.rae"))
+print(knn_rae)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ```{r}
-learner_name <- "regr.fnn"
-fnn_learner <- lrn(learner_name)
-preproc <- po("imputelearner", lrn("regr.fnn")) %>>% po("scalerange")
-graph <- preproc %>>% po(fnn_learner)
-graph$plot()
-impute_scale_fnn_learner <- as_learner(graph)
-res_desc <- rsmp("holdout", ratio = 2/3)
-set.seed(0)
-res_desc$instantiate(practica_1_task)
 
-set.seed(0)
-fnn_resample <- resample(task = practica_1_task,
-                         learner = impute_scale_fnn_learner,
-                         resampling = res_desc)
-fnn_rae <- fnn_resample$aggregate(msr("regr.rae"))
-print(fnn_rae)
 ```
 
-
-
-
-
-
-
-
-
-
-
-
-\subsection{Métodos de escalado}
-\subsubsection{Normalización de los datos}
-Por ejemplo normalizamos los datos y hacemos una codificación \emph{one-hot} de las variables cualitativas:
-```{r}
-preproces_pipeline <- po("scale", param_vals = list(center = TRUE, scale = TRUE)) %>>%
-                      po("encode",param_vals = list(method = "one-hot"))
-
-preproces_pipeline$train(task_train)
-task_train_prerp <- preproces_pipeline$predict(task_train)[[1]]$clone()
-task_test_prerp  <- preproces_pipeline$predict(task_test)[[1]]$clone()
-task_train_prerp$data() %>% head()
-```
-
-
-Definimos el método de aprendizaje, que en este caso será un \emph{K-Nearest Neighbour}:
-```{r}
-knn_learner <- lrn("classif.fnn")
-```
 
 \newpage
 \section{Bibliografía}
