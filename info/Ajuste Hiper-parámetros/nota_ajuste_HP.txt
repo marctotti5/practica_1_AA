@@ -1,0 +1,57 @@
+============================================================
+Sobre el custom resampling en el ajuste de hiper-parámetros:
+============================================================
+
+Parece que el custom resampling no funciona al hacer ajuste de hiper-parámetros en mlr3 con AutoTuner$new (aunque si que funcionaba en mlr2).
+Es decir, el siguiente inner NO va a funcionar con ajuste de hiper-parámetros AutoTuner$new:
+
+desc_inner <- rsmp("custom")
+desc_inner$instantiate(tarea, 
+                       train=list(1:(6*365)),
+                       test=list((6*365+1):(9*365)))
+
+Para conseguir que funcione he programado un nuevo método de resampling para mlr3 que es como holdout, pero sin desordenar los datos.
+De esta manera, si ponemos lo siguiente, cogerá 6 de cada 9 datos para entrenar (y el resto para validación). Si los datos contienen 9 años,
+como no desordena los datos, cogerá los primeros 6 años para entrenar y los últimos 3 para hacer validación en el ajuste de hiper-parámetros.
+
+En resumen, que para hacer ajuste de hiper-parámetros con Autotuner$new, tenéis que usar el siguiente desc_inner (sin hacer instantiate), en lugar
+del custom que había que usar originalmente.
+
+# El source es para ejecutar el fichero que contiene el nuevo método de resampling. 
+# Este fichero debe de estar en el mismo directorio que el fichero con vuestro código.
+source("ResamplingHoldoutOrder.R")
+desc_inner <- rsmp("holdoutorder",ratio=6/9)
+
+================================================================
+Ejemplo para hacer ajuste de hiper-parámetros
+================================================================
+
+Aquí debajo viene un ejemplo, aunque tendréis que rellenar los detalles vosotros
+
+# my_learner contiene una secuencia de preprocesos y el learner
+# my_space es el espacio de búsqueda de hiper-parámetros para ese learner
+# desc_outer es la evaluación outer (o sea, un custom con entrenamiento 9 años y test 3 años)
+
+source("ResamplingHoldoutOrder.R")
+desc_inner <- rsmp("holdoutorder",ratio=6/9)
+
+learner_ajuste<-AutoTuner$new(
+  learner = my_learner,
+  resampling = desc_inner,
+  measure = medida,
+  search_space = my_space,
+  terminator = trm("evals", n_evals = 5 ),
+  tuner=tnr("random_search"),
+  store_tuning_instance = TRUE)
+
+#Evaluamos el learner con auto ajuste
+learner_ajuste_resample <- resample(tarea,learner_ajuste,desc_outer,store_models = TRUE)
+
+error_outer <- learner_ajuste_resample$aggregate(medida)
+
+# Para ver el modelo cuyos hiper-pars han sido ajustados (y sus hiper-parámetros):
+modelo_ajustado <- learner_ajuste_resample$learners[[1]]$base_learner()$learner
+
+# Para ver todas las combinaciones de hiperparámetros probadas y su evaluación inner, ordenada de (menor) mejor a peor
+# La mejor combinación de hiper-parámetros aparece la primera, y corresponde a los hiper-parámetros elegidos.
+print(dplyr::arrange(as.data.frame(as.data.table(learner_ajuste_resample$learners[[1]]$tuning_instance$archive)), regr.rae))

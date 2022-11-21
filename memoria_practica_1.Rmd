@@ -1,0 +1,314 @@
+---
+title: ""
+author: ""
+date: ""
+geometry: "left=3cm,right=3cm,top=3cm,bottom=3cm"
+header_includes:
+ - \usepackage{longtable}
+ - \usepackage{lscape}
+output: 
+        pdf_document:
+                includes:
+                        in_header: "wrap-code.tex"
+                        before_body: "portada.sty"
+                toc_depth: 6
+                number_sections: true
+institute: "Universidad Carlos III de Madrid"
+documentclass: "article"
+papersize: a4
+linestrech: 1.5
+fontsize: 11pt
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+\newpage
+\section{Objetivo}
+Crear modelos de regresión para predecir la radiación solar, a partir de predicciones de variables meteorológicas.
+
+
+\newpage
+\section{Problema}
+A finales del 2015 se estimó que el 23,7% de la energía eléctrica mundial se produjo mediante fuentes de energía renovables.
+
+Uno de los mayores problemas que tiene la energía solar es su variabilidad e incertidumbre. Las empresas productoras necesitan una estimación diaria para las siguientes 24 horas. Por ello es importante tener una predicción lo más acertada posible.
+
+Nuestro principal objetivo será predecir la radiación solar diaria en una planta solar de Oklahoma a partir de predicciones de variables
+meteorológicas del día anterior, usando MLR.
+
+\newpage
+\section{Datos}
+Tenemos el archivo número 21. Vamos a leer los datos `disp21.rds`, que contienen todos los datos de entrenamiento y validación y luego el conjunto `comp21.rds`, que contienen todos los datos para realizar las predicciones de competición.
+```{r, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(mlr3)
+library(mlr3verse)
+library(mlr3learners)
+library(mlr3extralearners)
+library(mlr3filters)
+library(paradox)
+library(mlr3tuning)
+library(mlr3viz)
+library(mlr3pipelines)
+datos_disp <- readRDS("./datos/disp_21.rds")
+datos_compet <- readRDS("./datos/compet_21.rds")
+```
+
+El \emph{dataset} `datos_disp` consta de un conjunto de datos diarios durante un periodo de 12 años (1994-2006), es decir, de un tamaño muestral $n = 12 \cdot 365 = 4380$. Además, consta de 75 variables predictoras, que consisten en 15 variables meteorológicas medidas durante 5 momentos del dia, con lo que el número de predictores es: $p = 15 \cdot 5 = 75$ y una variable respuesta, que es la radiación solar diaria de una cierta planta solar de Oklahoma.
+
+Las variables del conjunto son las siguientes (ver siguiente página):
+\clearpage
+\begin{landscape}
+\begin{longtable}[c]{llll}
+\hline
+\textbf{Variable}           & \textbf{Tipo}          & \textbf{Descripción}      &\textbf{Unidades}                                   \\ \hline
+\endhead
+%
+\hline
+\endfoot
+%
+\endlastfoot
+%
+apcp\_sfc & Numérica continua & Precipitación acumulada en la superficie durante 3 horas. & $kg/m^2$ \\
+dlwrf\_sfc & Numérica continua & Promedio de flujo radiativo de onda larga en la superficie. & $W/m^2$ \\
+dswrf\_sfc & Numérica continua & Promedio de flujo radiativo de onda corta en la superficie. & $W/m^2$ \\
+pres\_msl & Numérica continua & Presión del aire al nivel medio del mar. & $Pa$ \\
+pwat\_eatm & Numérica continua & Agua precipitable sobre toda la atmósfera. & $kg/m^2$ \\
+spfh\_2m & Numérica continua & Humedad específica a 2 m sobre el suelo. & $kg/kg-l$ \\
+tcdc\_eatm & Numérica continua & Cobertura total de nubes sobre toda la profundidad de la atmósfera. & $\%$ \\
+tcolc\_eatm & Numérica continua & Condensado total integrado en la columna sobre toda la atmósfera. & $kg/m^2$ \\
+tmax\_2m & Numérica continua & Temperatura máxima en las últimas 3 horas a 2 m sobre el suelo. & $K$ \\
+tmin\_2m & Numérica continua & Temperatura mínima en las últimas 3 horas a 2 m sobre el suelo. & $K$ \\
+tmp\_2m & Numérica continua & Temperatura actual a 2 m sobre el suelo. & $K$ \\
+tmp\_sfc & Numérica continua & Temperatura de la superficie. & $K$ \\
+ulwrf\_sfc & Numérica continua & Radiación ascendente de onda larga en la superficie. & $W/m^2$ \\
+ulwrf\_tatm & Numérica continua & Radiación ascendente de onda larga en la parte superior de la atmósfera. & $W/m^2$ \\
+uswrf\_sfc & Numérica continua & Radiación ascendente de onda corta en la superficie. & $W/m^2$ \\
+\end{longtable}
+\end{landscape}
+
+
+\section{Análisis Exploratorio de Datos}
+Utilizaremos el paquete `mlr3`, por lo que antes de llevar a cabo las particiones de entrenamiento y validación debemos crear una \emph{task}:
+```{r}
+datos_disp
+practica_1_task <- as_task_regr(datos_disp, target = "salida", id = "radiacion")
+practica_1_task$print()
+practica_1_task$feature_types
+practica_1_task$data()
+```
+
+Realizamos el análisis exploratorio mediante la librería `skimr`:
+```{r, message = FALSE}
+library(skimr)
+skim_exploratorio <- skim(practica_1_task$data())
+skim_exploratorio %>% filter(skim_type == "character")
+skim_exploratorio %>% filter(skim_type == "factor")
+skim_exploratorio %>% filter(skim_type == "numeric") %>% select(-numeric.hist, -numeric.p0, -numeric.p100)
+```
+
+Podemos ver que hay 4380 instancias y 76 atributos, de los cuáles 35 son atributos numéricos, 39 de tipo `factor` y 2 de tipo `character`. Las variables `factor` son todas completas, las `character` tienen alrededor de un 10% de NA's y en algunas numéricas como `dswrf_s1_1`, `tcolc_e4_1`, `tmp_2m_4_1` existe más de un 85% de porcentaje de NA's (las eliminaremos posteriormente durante el pre-proceso), mientras que las demás numéricas tienen un porcentaje mucho menor de datos faltantes. 
+```{r, warning = FALSE, message = FALSE, fig.height = 7, fig.width=5, fig.align='center'}
+(variables_numericas_muchos_NA <- skim_exploratorio %>% filter(skim_type == "numeric" & complete_rate < 0.2) %>% select(skim_variable) %>% as.data.frame() %>% as.matrix() %>% as.vector())
+library(naniar)
+gg_miss_var(practica_1_task$data()[], show_pct = TRUE) + ylim(1, 100)
+```
+
+Hay que diferenciar variables que toman valores constantes de aquellas que toman valores muy pequeños, ya que en ambos casos la desviación típica es igual o muy próxima a 0, estas son: `dswrf_s1_1`, `dswrf_s2_1`, `spfh_2m1_1`, `spfh_2m5_1`, `tcdc_ea5_1`, `tcolc_e1_1`,  `tcolc_e4_1`,  `tmp_sfc1_1` y `uswrf_s2_1`.
+```{r}
+(variables_numericas_poca_variabilidad <- skim_exploratorio %>% filter(skim_type == "numeric" & numeric.sd < 1) %>% select(skim_variable) %>% as.data.frame() %>% as.matrix() %>% as.vector())
+```
+
+Vamos a ver si realmente son constantes o solamente es que toman valores muy pequeños y por ello la desviación típica tiende a cero. Para ello nos basaremos en los histogramas:
+```{r, message = FALSE}
+for(i in variables_numericas_poca_variabilidad){
+        datos_disp %>% select(i) %>% as.matrix() %>% as.vector() %>% na.omit() %>% hist(main = i)
+}
+```
+
+Podemos ver que las variables `dswrf_s1_1`, `tcdc_ea5_1`, `tcolc_e1_1`, `tcolc_e4_1`, `tmp_sfc1_1` y `uswrf_s2_1` son efectivamente constantes, mientras que `spfh_2m1_1` y `spfh_2m5_1` tienen poca variabilidad por tener valores muy pequeños, pero sí tienen variabilidad. Con lo que guardamos dichas variables para posteriores acciones:
+```{r}
+variables_numericas_constantes <- c("dswrf_s1_1", "tcdc_ea5_1", "tcolc_e1_1", "tcolc_e4_1", "tmp_sfc1_1", "uswrf_s2_1")
+```
+
+Convertiremos todos los datos que no sean numéricos en `factor`, especialmente los `character`, que pueden dar problemas en futuras aplicaciones:
+```{r}
+variables_character <- skim_exploratorio %>% filter(skim_type == "character") %>% select(skim_variable) %>% as.matrix() %>% as.vector()
+datos_disp[, variables_character[1]] <- as.factor(datos_disp[, variables_character[1]])
+datos_disp[, variables_character[2]] <- as.factor(datos_disp[, variables_character[2]])
+practica_1_task <- as_task_regr(datos_disp, target = "salida", id = "radiacion")
+```
+
+
+
+\subsection{Variable respuesta}
+A continuación graficaremos la variable respuesta en el tiempo. Para ello debemos generar un vector de fechas diarias entre los años 1994 y 2006 (sin tener en cuenta)
+```{r}
+vector_indicador <- 1:nrow(datos_disp)
+datos_grafico_respuesta <- data.frame(indice = vector_indicador, salida = datos_disp$salida) 
+ggplot(data = datos_grafico_respuesta, aes(x = vector_indicador, y = salida)) + geom_line() + xlab("día") + ylab("salida") + ggtitle("Radiación a lo largo del tiempo (1996-2008)")
+```
+
+Podemos ver que existe una clara estacionalidad en la radiación captada por las placas solares, aunque el nivel de la serie parece constante en el tiempo, es decir, no se observan tendencias crecientes ni decrecientes en los datos, esto es, los niveles de radiación son parecidos año tras año.
+
+\section{Métrica: Relative Absolute Error}
+El error absoluto relativo (RAE en inglés) para un modelo de regresión con variable respuesta $y_i$ puede ser definido como:
+$$
+RAE(\hat{y_i}) = \frac{\sum_{i=1}^n |y_i - \hat{y_i}|}{\sum_{i=1}^n |y_i - \overline{y}|}
+$$
+dónde $\hat{y_i}$ es la predicción de la variable respuesta que hace el modelo de regresión e $\overline{y} = \frac{1}{n}\sum_{i=1}^n y_i$. Se puede interpretar como un ratio entre el error absoluto de predicción con el modelo escogido y el error absoluto para una predicción \emph{naive} basada en la media de la respuesta $\overline{y}$. Esta medida no está definida para el caso $y_i = y \quad \forall i=1, \dots, n$.
+
+Este ratio puede ser usado mediante la librería `mlr3` mediante instanciado a través del diccionario `mlr_measures` o mediante la función asociada `msr()`:
+```{r, message=FALSE, results=FALSE}
+mlr_measures$get("regr.rae")
+msr("regr.rae")
+```
+
+
+\newpage
+\section{Mejor método de imputación y de escalado}
+En este apartado vamos a comparar distintos métodos de imputación y escalado en base a su RAE en el conjunto de testeo para un modelo de vecino más cercano con hiper-parámetros por defecto.
+
+\subsection{Eliminación de las variables que toman valores constantes y/o tienen muchos NA}
+Eliminaremos del modelo aquellos predictores que tienen valores constante o varianzas muy próximas a cero y también aquellos que tienen un porcentaje de NA muy elevado (véase Análisis Exploratorio de Datos):
+```{r}
+datos_disp <- datos_disp %>% select(-(all_of(c(variables_numericas_constantes, variables_numericas_muchos_NA))))
+datos_compet <- datos_compet %>% select(-(all_of(c(variables_numericas_constantes, variables_numericas_muchos_NA))))
+practica_1_task <- as_task_regr(datos_disp, target = "salida", id = "radiacion")
+```
+
+
+\subsection{Particiones de entrenamiento y test}
+A continuación dividiremos el conjunto de datos `datos_disp` en particiones de entrenamiento y testeo, correspondiendo los datos de los primeros 9 años a datos de entrenamiento, y los 3 últimos años a validación:
+```{r}
+set.seed(100430509) # NIA de Marc Pastor
+#source("./info/Ajuste Hiper-parámetros/ResamplingHoldoutOrder.R")
+#desc_inner <- rsmp("holdoutorder", ratio = 6/9)
+desc_inner <- rsmp("custom")
+desc_inner$instantiate(practica_1_task, 
+                       train = list(1:(9*365)),
+                       test = list((9*365+1):(12*365)))
+id_train <- desc_inner$train_set(i = 1)
+id_test <- desc_inner$test_set(i = 1)
+
+# Se crean dos nuevas task, una con los datos de train y otra con los de test.
+# Dado que se va a aplicar un filtrado, y para no alterar task_datos, se emplea
+# antes del filtro el método $clone() para hacer una copia.
+task_train <- practica_1_task$clone()$filter(id_train)
+task_test  <- practica_1_task$clone()$filter(id_test)
+```
+
+\subsection{Métodos de imputación multivariante}
+En esta sección usaremos distintos métodos de imputación multivariante ya que disponemos de datos multivariantes, tanto variables continuas, como categóricas, etc.
+\subsubsection{Imputación mediante AMELIA (\emph{Multiple Imputation of Incomplete Multivariate Data})}
+AMELIA es un procedimiento para imputar datos multivariantes. Entre sus supuestos el principal es asumir que los datos (tanto observados como no) siguen una distribución normal multivariante. Si denotamos el \emph{dataset} de tamaño $(n \times k)$ como $D$, enconces esta asunción es:
+$$
+D \sim \mathcal{N}_k(\mu, \Sigma).
+$$
+
+En nuestro caso los datos no son solamente continuos, sino que hay variables categóricas y discretas, por lo que esta asunción no se va a dar. Por ello, descartaremos este procedimiento.
+
+\subsubsection{MICE: \emph{Multiple Imputation by Chained Equations}}
+MICE es un método de imputación múltiple que se basa en el supuesto de que dadas las variables usadas en el proceso de imputación, los datos faltantes son MAR (\emph{Missing At Random}), lo cuál significa que la probabilidad de que un valor sea faltante depende solo de los valores observados y no de los valores que no han sido observados. En otras palabras, después de controlar todos los datos disponibles (es decir, las variables incluidas en el modelo de imputación), cualquier dato faltante es completamente aleatorio. Implementar MICE cuando los datos no son MAR podría dar lugar a estimaciones sesgadas. De aquí en adelante, supondremos que nuestros datos son MAR.
+
+Muchos de los modelos de imputación múltiples inicialmente desarrollados, asumen una distribución conjunta de todas las variables, por ejemplo la distribución normal, lo cuál no suele ocurrir en conjuntos de datos grandes, con decenas de variables de distintos tipos. MICE ofrece una alternativa flexible basada en modelos de regresión donde los datos faltantes se modelan en función de las variables disponibles en los datos. Esto implica que cada variable puede ser modelada en base a su distribución, por ejemplo las variables binarias con regresión logística y las continuas con regresión lineal, etc.
+
+\textbf{Procedimiento MICE}
+
+El algoritmo MICE puede ser dividido en 4 grandes pasos:
+\begin{enumerate}
+\item Se ejecuta una imputación simple, por ejemplo imputación mediante la media, para cada valor faltante en el \emph{dataset}. Estas imputaciones sencillas pueden ser pensadas como imputaciones base. 
+\item Las imputaciones base para cada variable $X_i$ vuelven a ser asignadas el valor de faltante/missing.
+\item Los valores observados de la variable $X_i$ en el paso 2 se modelan como un modelo de regresión en función del resto de variables en el \emph{dataset}. Estos modelos de regresión operan bajo los supuestos que uno haria cuando realiza regresión logística, lineal o Poisson fuera del contexto de datos faltantes.
+\item Los valores faltantes de la variable $X_i$ son reemplazados por las predicciones (imputaciones) del modelo de regresión. Cuando $X_i$ posteriormente se utilice en los modelos de regresión para otras variables, se utilizarán tanto los valores observados como los imputados.
+\item Se repiten los pasos 2-4 para cada variable que tiene datos faltantes. El proceso para cada una de las variables constituye una iteración o ciclo. Al final de cada ciclo, todos los valores faltantes han sido sustituidos por predicciones de regresiones que representan las relaciones entre los datos observados. 
+\item Los pasos 2-4 se repiten para un número de ciclos, con las imputaciones siendo actualizadas en cada ciclo.
+\end{enumerate}
+
+El número de ciclos a realizarse puede ser escogido por el investigador, aunque generalmente se llevan a cabo 10. La idea es que al final de los ciclos, la distribución de los parámetros que gobiernan las imputaciones (por ejemplo los coeficientes de los modelos de regresión) deben haber convergido, en el sentido de volverse estables.
+
+
+```{r}
+poe = po("encode")
+
+# poe is initialized with encoding: "one-hot"
+poe$train(list(practica_1_task))[[1]]$data()
+```
+
+Vamos a aplicarlo a los datos y a calcular el error de test para un modelo de \emph{K Nearest Neighbour}. Primero convertiremos todas las variables categóricas en binarias mediante \emph{one-hot encoding}:
+```{r}
+# Definimos la parte de preproceso
+poe = po("encode")
+# Creating Graph
+graph_mice <- PipeOpMice$new() %>>% lrn('regr.fnn')
+# Creating Graph Learners
+Learner_mice <-  as_learner(GraphLearner$new(graph_mice))
+
+graph_mice <- poe %>>% po(Learner_mice)
+# Cross-Validation
+res_desc <- rsmp("holdout", ratio = 2/3)
+set.seed(100430509)
+res_desc$instantiate(practica_1_task)
+rr_mice <- resample(practica_1_task, Learner_mice, resampling = res_desc)
+
+# Compering accuracy
+rr_mice$aggregate(msr('regr.rae'))
+```
+
+```{r}
+learner_name <- "regr.fnn"
+fnn_learner <- lrn(learner_name)
+preproc <- po("imputelearner", lrn("regr.fnn")) %>>% po("scalerange")
+graph <- preproc %>>% po(fnn_learner)
+graph$plot()
+impute_scale_fnn_learner <- as_learner(graph)
+res_desc <- rsmp("holdout", ratio = 2/3)
+set.seed(0)
+res_desc$instantiate(practica_1_task)
+
+set.seed(0)
+fnn_resample <- resample(task = practica_1_task,
+                         learner = impute_scale_fnn_learner,
+                         resampling = res_desc)
+fnn_rae <- fnn_resample$aggregate(msr("regr.rae"))
+print(fnn_rae)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+\subsection{Métodos de escalado}
+\subsubsection{Normalización de los datos}
+Por ejemplo normalizamos los datos y hacemos una codificación \emph{one-hot} de las variables cualitativas:
+```{r}
+preproces_pipeline <- po("scale", param_vals = list(center = TRUE, scale = TRUE)) %>>%
+                      po("encode",param_vals = list(method = "one-hot"))
+
+preproces_pipeline$train(task_train)
+task_train_prerp <- preproces_pipeline$predict(task_train)[[1]]$clone()
+task_test_prerp  <- preproces_pipeline$predict(task_test)[[1]]$clone()
+task_train_prerp$data() %>% head()
+```
+
+
+Definimos el método de aprendizaje, que en este caso será un \emph{K-Nearest Neighbour}:
+```{r}
+knn_learner <- lrn("classif.fnn")
+```
+
+\newpage
+\section{Bibliografía}
+https://mlr3.mlr-org.com/reference/mlr_measures_regr.rae.html \\
+https://gking.harvard.edu/files/gking/files/amelia_jss.pdf \\
+ncbi.nlm.nih.gov/pmc/articles/PMC3074241/
