@@ -1,0 +1,115 @@
+---
+title: ""
+author: ""
+date: ""
+geometry: "left=3cm,right=3cm,top=3cm,bottom=3cm"
+header_includes:
+ - \usepackage{longtable}
+ - \usepackage{lscape}
+output: 
+        pdf_document:
+                includes:
+                        in_header: "wrap-code.tex"
+                        before_body: "portada.sty"
+                toc_depth: 6
+                number_sections: true
+institute: "Universidad Carlos III de Madrid"
+documentclass: "article"
+papersize: a4
+linestrech: 1.5
+fontsize: 11pt
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(mlr3)
+library(mlr3verse)
+library(mlr3learners)
+library(mlr3extralearners)
+library(mlr3filters)
+library(paradox)
+library(mlr3tuning)
+library(mlr3viz)
+library(mlr3pipelines)
+library(NADIA)
+```
+
+
+
+
+
+
+
+\section{KNN}
+
+Ahora vamos a ajustar un modelo de `k-nearest neighbours` para ver cómo se comporta con estos datos.
+Lo primero será crear el objeto learner para este modelo.
+```{r}
+learner_knn <- lrn("regr.kknn")
+learner_knn$train(task = task_DI_train)
+
+knn_predict <- learner_knn$predict(task = task_DI_test)
+(knn_rae <- knn_predict$score(measure))
+```             
+
+Como podemos ver, el **Error Absouto Relativo (RAE)** para este modelo sin ajustar hiperparámetros es de `r round(knn_rae,3)`, ahora vamos a ajustar el hiperparámetro $\mathcal{k}$ para ver si conseguimos bajar ese error.
+
+Lo primero será crear un objeto `resample` para hacer la evaluación de los hiperparámetros, para la que usaré un **HoldOut** de ratio $\frac{3}{4}$ para la muestra de test y definiré el espacio de búsqueda, en este caso desde $\mathcal{1}$ hasta $\mathcal{20}$.
+```{r}
+HO_knn <- rsmp("holdout", ratio=3/4)
+
+kknn_space <- ps(k = p_int(lower=1, upper=20))
+```
+
+\subsection{Grid Search}
+Lo primero que haremos será usar un método de grid search, que busca exhaustivamente por todo el espacio de hiperparámetros dado, que en este caso es una sucesión de números enteros desde $\mathcal{1}$ a $\mathcal{20}$.
+
+```{r}
+generate_design_grid(kknn_space, param_resolutions = c(k=20))
+terminator_knn <- trm("none")
+tuner_knn <- tnr("grid_search", param_resolutions=c(k=20))
+```
+
+Una vez hecho el tuner con el diseño de grid search, ya podemos entrenar el learner con el ajuste de hiperparámetros y comprobar si ha bajado o ha subido el RAE con respecto al modelo sin ajuste de hiperparámetros.
+
+```{r}
+knn_ajuste <- AutoTuner$new(
+  learner = learner_knn,
+  resampling = HO_knn,
+  measure = measure,
+  search_space = kknn_space,
+  terminator = terminator_knn,
+  tuner = tuner_knn,
+  store_tuning_instance = TRUE
+)
+
+lgr::get_logger("mlr3")$set_threshold("warn")
+lgr::get_logger("bbotk")$set_threshold("warn")
+
+set.seed(100430509)
+knn_ajuste_resample <- resample(task_DI, knn_ajuste, desc_inner, store_models = TRUE )
+
+knn_ajuste_rae <- kknn_ajuste_resample$aggregate(measure)
+print(knn_ajuste_rae)
+```
+
+Como podemos ver, el modelo que menos RAE tiene prediciendo los datos de test es el que ha pasado por el ajuste de hiperparámetros. Aún así, solo se ha reducido en `r round(knn_rae-knn_ajuste_rae,4)`, por lo que podemos decir que el modelo knn no es de los mejores para tratar estos datos, ya que tienen bastante Error Absoluto Relativo.
+
+\section{cubist}
+
+Ahora vamos a probar con una regresión cubist, que se basa en hacer árboles de regresión que tienen modelos de regresión lineal en las hojas terminales que se basan en las predicciones hechas por los árboles que les sirven para decidir cómo se va a dividir. En este caso no haremos ajuste de hiperparámetros, por lo que voy a pasar directamente a crear el learner para este modelo y hacer las predicciones en la muestra de test.
+
+```{r}
+learner_cubist <- lrn("regr.cubist")
+learner_cubist$train(task = task_DI_train)
+
+cubist_predict <- learner_cubist$predict(task = task_DI_test)
+(cubist_rae <- cubist_predict$score(measure))
+```
+
+Como vemos, aquí tenemos un Error Absoluto Relativo de `r round(cubist_rae,3)`, siendo mejor en términos de esta medida que los modelos knn, tanto con ajuste como sin ajuste de hiperparámetros.

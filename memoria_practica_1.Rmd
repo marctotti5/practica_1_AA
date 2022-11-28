@@ -164,7 +164,7 @@ dónde $\hat{y_i}$ es la predicción de la variable respuesta que hace el modelo
 Este ratio puede ser usado mediante la librería `mlr3` mediante instanciado a través del diccionario `mlr_measures` o mediante la función asociada `msr()`:
 ```{r, message=FALSE, results=FALSE}
 mlr_measures$get("regr.rae")
-msr("regr.rae")
+(measure <- msr("regr.rae"))
 ```
 
 
@@ -301,6 +301,14 @@ print(knn_rae)
 graph_learner_missRanger_trained <- graph_learner$train(practica_1_task)
 datos_imputados <- graph_learner_missRanger_trained$graph_model$pipeops$regr.kknn$learner_model$model
 datos_imputados <- datos_imputados$data
+
+task_DI <- practica_1_task <- as_task_regr(datos_imputados, target = "salida", id = "radiacion")
+task_DI_train <- task_DI$clone()$filter(id_train)
+task_DI_test  <- task_DI$clone()$filter(id_test)
+```
+
+```{r}
+
 ```
 
 
