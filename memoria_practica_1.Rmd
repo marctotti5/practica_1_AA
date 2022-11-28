@@ -297,23 +297,10 @@ print(knn_rae)
 ```
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 ```{r}
-
+graph_learner_missRanger_trained <- graph_learner$train(practica_1_task)
+datos_imputados <- graph_learner_missRanger_trained$graph_model$pipeops$regr.kknn$learner_model$model
+datos_imputados <- datos_imputados$data
 ```
 
 
