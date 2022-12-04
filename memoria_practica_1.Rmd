@@ -11,6 +11,7 @@ output:
                 includes:
                         in_header: "wrap-code.tex"
                         before_body: "portada.sty"
+                toc: true
                 toc_depth: 6
                 number_sections: true
 institute: "Universidad Carlos III de Madrid"
@@ -29,8 +30,6 @@ knitr::opts_chunk$set(echo = TRUE)
 \section{Objetivo}
 Crear modelos de regresión para predecir la radiación solar, a partir de predicciones de variables meteorológicas.
 
-
-\newpage
 \section{Problema}
 A finales del 2015 se estimó que el 23,7% de la energía eléctrica mundial se produjo mediante fuentes de energía renovables.
 
@@ -39,7 +38,6 @@ Uno de los mayores problemas que tiene la energía solar es su variabilidad e in
 Nuestro principal objetivo será predecir la radiación solar diaria en una planta solar de Oklahoma a partir de predicciones de variables
 meteorológicas del día anterior, usando MLR.
 
-\newpage
 \section{Datos}
 Tenemos el archivo número 21. Vamos a leer los datos `disp21.rds`, que contienen todos los datos de entrenamiento y validación y luego el conjunto `comp21.rds`, que contienen todos los datos para realizar las predicciones de competición.
 ```{r, message = FALSE, warning = FALSE}
@@ -187,27 +185,27 @@ A continuación dividiremos el conjunto de datos `datos_disp` en particiones de 
 set.seed(100430509) # NIA de Marc Pastor
 #source("./info/Ajuste Hiper-parámetros/ResamplingHoldoutOrder.R")
 #desc_inner <- rsmp("holdoutorder", ratio = 6/9)
-desc_inner <- rsmp("custom")
-desc_inner$instantiate(practica_1_task, 
+desc_outer <- rsmp("custom")
+desc_outer$instantiate(practica_1_task, 
                        train = list(1:(9*365)),
                        test = list((9*365+1):(12*365)))
-id_train <- desc_inner$train_set(i = 1)
-id_test <- desc_inner$test_set(i = 1)
-
-# Se crean dos nuevas task, una con los datos de train y otra con los de test.
-# Dado que se va a aplicar un filtrado, y para no alterar task_datos, se emplea
-# antes del filtro el método $clone() para hacer una copia.
-task_train <- practica_1_task$clone()$filter(id_train)
-task_test  <- practica_1_task$clone()$filter(id_test)
 ```
 
-\subsection{Métodos de escalado}
 \subsection{Métodos de escalado}
 \subsubsection{Normalización de los datos}
 Eliminamos las constantes, normalizamos los datos y hacemos una codificación \emph{one-hot} de las variables cualitativas:
 ```{r}
 preproc_inicial <- po("removeconstants") %>>% po("encode")
 practica_1_task <- preproc_inicial$train(practica_1_task)[[1]]
+
+id_train <- desc_outer$train_set(i = 1)
+id_test <- desc_outer$test_set(i = 1)
+
+# Se crean dos nuevas task, una con los datos de train y otra con los de test.
+# Dado que se va a aplicar un filtrado, y para no alterar task_datos, se emplea
+# antes del filtro el método $clone() para hacer una copia.
+task_train <- practica_1_task$clone()$filter(id_train)
+task_test  <- practica_1_task$clone()$filter(id_test)
 ```
 
 
@@ -252,7 +250,7 @@ graph_learner <- GraphLearner$new(graph, id = 'mice.learner')
 graph_learner$id <-  'mice.learner'
 # resampling 
 set.seed(100430509)
-knn_resample <- resample(practica_1_task, graph_learner, desc_inner)
+knn_resample <- resample(practica_1_task, graph_learner, desc_outer)
 knn_rae <- knn_resample$aggregate(msr("regr.rae"))
 print(knn_rae)
 ```
@@ -271,7 +269,7 @@ graph_learner <- GraphLearner$new(graph, id = 'missForest.learner')
 graph_learner$id <-  'missForest.learner'
 # resampling 
 set.seed(100430509)
-knn_resample <- resample(practica_1_task, graph_learner, desc_inner)
+knn_resample <- resample(practica_1_task, graph_learner, desc_outer)
 knn_rae <- knn_resample$aggregate(msr("regr.rae"))
 print(knn_rae)
 ```
@@ -291,11 +289,12 @@ graph_learner <- GraphLearner$new(graph, id = 'missRanger.learner')
 graph_learner$id <-  'missRanger.learner'
 # resampling 
 set.seed(100430509)
-knn_resample <- resample(practica_1_task, graph_learner, desc_inner)
+knn_resample <- resample(practica_1_task, graph_learner, desc_outer)
 knn_rae <- knn_resample$aggregate(msr("regr.rae"))
 print(knn_rae)
 ```
 
+Ahora que hemos visto que el método \emph{MissRanger} es el que menos `rae` tiene de los que hemos probado, vamos a extraer los datos de imputados y usarlos para crear una nueva \emph{task} con ellos.
 
 ```{r}
 graph_learner_missRanger_trained <- graph_learner$train(practica_1_task)
@@ -307,8 +306,314 @@ task_DI_train <- task_DI$clone()$filter(id_train)
 task_DI_test  <- task_DI$clone()$filter(id_test)
 ```
 
-```{r}
+\section{Métodos para predecir}
 
+En esta parte del trabajo vamos a probar con varios métodos para predecir los datos de test, para luego ajustar hiperparámetros y ver si ha mejorado, empeorado, o no han habido cambios en las predicciones.
+
+\subsection{Sin ajuste de hiperparámetros}
+\subsubsection{KNN}
+
+Primero probaremos con el método de los K vecinos más cercanos, que estima el valor de la función de probabiolidad de que un elemento $\mathcal{x}$ pertenezca a la clase $\mathcal{C_j}$ a partir de la información proporcionada por los predictores. Este es el caso de este método para clasificación, pero aquí usaremos su versión para regresión, que en lugar de establecer un sistema de votación considerando su clase, se devuelve como predicción el valor medio de es clase.
+
+Lo primero será crear el objeto learner para este modelo.
+```{r}
+learner_knn <- lrn("regr.kknn")
+rae_sin_hp <- function(learner, train, test, measure){
+        learner$train(task = train)
+        predict <- learner$predict(task = test)
+        rae <- predict$score(measure)
+        return(list(predicciones = predict$response, RAE = rae))
+}
+
+knn_rae <- rae_sin_hp(learner_knn, task_DI_train,task_DI_test, measure)
+knn_rae[2]
+```     
+
+Como podemos ver, el **Error Absouto Relativo (RAE)** para este modelo sin ajustar hiperparámetros es de `r round(knn_rae[[2]],3)`. Cuando los hayamos ajustado todos veremos cuál es el que tiene menor RAE y, por lo tanto, el mejor método para predecir sobre estos datos.
+
+\subsubsection{Cubist}
+
+Ahora vamos a probar con una regresión cubist, que se basa en hacer árboles de regresión que tienen modelos de regresión lineal en las hojas terminales que se basan en las predicciones hechas por los árboles que les sirven para decidir cómo se va a dividir. En este caso no haremos ajuste de hiperparámetros, por lo que voy a pasar directamente a crear el learner para este modelo y hacer las predicciones en la muestra de test.
+
+```{r}
+learner_cubist <- lrn("regr.cubist")
+cubist_rae <- rae_sin_hp(learner_cubist, task_DI_train,task_DI_test, measure)
+cubist_rae[2]
+```
+
+\subsubsection{rpart}
+
+El siguiente método a probar será un arbol de regresión, que usa árboles de decisión como modelo predictivo que mapea las observaciones de los predictores. Este mapeado se hace al dividir las ramas en función de los valores que toman los predictores para separarlos en hiper-rectángulos, y la predicción de cualquier punto de un hiper-rectángulo será la media de la variable salida de las observaciones que se encuentren en ese hiper-rectángulo.
+
+```{r}
+learner_rpart <- lrn("regr.rpart")
+rpart_rae <- rae_sin_hp(learner_rpart, task_DI_train,task_DI_test, measure)
+rpart_rae[2]
+```    
+\subsubsection{RandomForest}
+
+También vamos a ajustar un random forest, que ajusta varios árboles de regresión y crea una conmbinación de los mismos en función los valores de una distribución aleatoria que es la misma para todos los árboles.
+
+
+```{r}
+learner_RF <- lrn("regr.randomForest")
+RF_rae <- rae_sin_hp(learner_RF, task_DI_train,task_DI_test, measure)
+RF_rae[2]
+```    
+
+\subsubsection{Regresión Lineal Múltiple}
+
+La idea principal de la regresión lineal múltiple es llenar la falta de información que provoca una distorsión en la correcta identificación de la variable y. En otras palabras, la regresión con múltiples regresores le permite medir el efecto de una variable específica $x_i$ sobre la variable $y$, manteniendo constantes las otras variables independientes. Formalmente, el modelo de regresión lineal múltiple incluye varios regresores $x_i$ y asocia a cada regresor un coeficiente $\beta_i$. El coeficiente $\beta_1$, por ejemplo, representa el cambio esperado de la variable dependiente y asociado con un cambio de unidad de $x_1$, manteniendo constantes los otros regresores.
+La regresión múltiple es una extensión de la regresión lineal en relación entre más de dos variables. En la relación lineal simple tenemos un predictor y una variable de respuesta, pero en regresión múltiple tenemos más de una variable predictora y una variable de respuesta.
+Los coeficientes del modelo de regresión lineal múltiple se pueden estimar utilizando el estimador clásico OLS (ordinary least squares), también conocido como el "estimador de mínimos cuadrados ordinarios". Los mínimos cuadrados ordinarios son un método muy eficaz para estimar la intersección y la pendiente de la línea de regresión. Este estimador, de hecho, determina los coeficientes beta eligiendo aquellos que minimizan la suma de los cuadrados de los errores.
+
+Ahora vamos a ajustar el modelo.
+
+```{r, warning=FALSE}
+learner_lm <- lrn("regr.lm")
+lm_rae <- rae_sin_hp(learner_lm, task_DI_train,task_DI_test, measure)
+lm_rae[2]
+```    
+
+
+\subsubsection{SVM}
+
+Al ser un clasificador binario supervisado, la máquina de vectores de soporte tiene el propósito de identificar un límite de separación (lineal o de otro tipo) en un espacio de elementos de tal manera que las observaciones posteriores se puedan clasificar automáticamente en grupos separados. Este límite de separación puede ser una línea unidimensional, como un plano o hiperplano, dependiendo de la dimensión en la que esté trabajando. En este caso, en el que queremos predecir la radiación solar, vamos a trabajar en un plano bidimensional.\
+Son posibles muchas fronteras de decisión y la frontera de decisión debe estar tan lejos de ambas clases como sea posible, intentando de maximizar el margin. Eso da lugar a la frontera con mejor capacidad de generalización. La ubicación de los hiperplanos depende completamente de la ubicación de los vectores de soporte. Al mover un vector de soporte, el hiperplano se mueve de su ubicación original a una nueva ubicación. El desplazamiento de un vector no compatible no tiene ningún impacto en el hiperplano.\
+El algoritmo SVM puede aprender límites de decisión entre clases que no son linealmente separables. Puede agregar otra dimensión a los datos, para encontrar una forma lineal de separar los datos no lineales. La dimensión extra se llama kernel (es decir, el producto escalar de los vectores en el espacio transformado), se puede imaginar como un "estiramiento" de datos en una tercera dimensión. Esta dimensión adicional le permite separar linealmente los datos. Cuando este hiperplano se proyecta sobre las dos dimensiones originales, aparece como un límite de decisión curvo. El algoritmo para encontrar el kernel utiliza una transformación matemática de los datos llamada función kernel, hay varias funciones del kernel y cada una de las cuales aplica una transformación diferente a los datos y es adecuada para encontrar límites de decisión lineales para diferentes situaciones:\
+\
+- Kernel lineal \
+- Kernel polinómico \
+- Kernel radial, gausiano \
+
+Con el kernel lineal:
+
+```{r}
+learner_svm_lin <- lrn("regr.svm", kernel="linear", type="eps-regression")
+svm_lin_rae <- rae_sin_hp(learner_svm_lin, task_DI_train,task_DI_test, measure)
+svm_lin_rae[2]
+```
+
+Con el kernel radial: 
+
+```{r}
+learner_svm_rad <- lrn("regr.svm", kernel="radial", type="eps-regression")
+svm_rad_rae <- rae_sin_hp(learner_svm_rad, task_DI_train,task_DI_test, measure)
+svm_rad_rae[2]
+```
+
+\subsubsection{Comparación}
+
+Una vez ajustados todos los métodos sin ajuste de hiperparámetros, vamos a ver cuál ha obtenido el menor RAE.
+
+\begin{center}
+\begin{tabular}{ |c|c|c|c|c|c|c|c| } 
+\hline
+\textbf{Ajuste hiper-par}           & \textbf{KNN}          & \textbf{Cubist}      &\textbf{rpart}      &\textbf{Randomforest}      &\textbf{Regresión}      &\textbf{SVM lineal}      &\textbf{SVM radial} \\
+ \hline \hline 
+ Sin & `r knn_rae[2]` & `r cubist_rae[2]` & `r rpart_rae[2]` & `r RF_rae[2]` & `r lm_rae[2]` & `r svm_lin_rae[2]` & `r svm_rad_rae[2]` 
+ \\
+ \hline
+\end{tabular}
+\end{center}
+
+Sin ajuste de hiperparámetros, el mejor modelo es el \emph{svm lineal}, con un $RAE_{svm_lin} = `r svm_lin_rae[2]`$.
+
+\subsection{Con ajuste de hiperparámetros}
+
+Ahora ajustaremos los hiperparámetros de algunos de estos modelos para ver si mejora su RAE y así poder elegir el mejor modelo de todos para estos datos.
+
+\subsubsection{KNN}
+
+Para este modelo vamos a usar un grid search a la hora de hacer el ajuste, que ajusta todos los modelos posibles dentro del espacio de búsqueda, el cual decidiremos más adelante, y elige el que mejor puntuación saque en la métrica seleccionada, en este caso el RAE.
+
+
+Primero crearemos un desc_inner sacado del archivo `ResamplingHoldoutOrder.R`, ya que un custom resampling no funciona con la función `Tuner`.
+```{r}
+source("ResamplingHoldoutOrder.R")
+
+desc_inner <- rsmp("holdoutorder",ratio=6/9)
+```
+
+Una vez creado este resample, vamos a definir el espacio de búsqueda para el grid search
+
+```{r}
+knn_space <- ps(k = p_int(lower=1, upper=20))
+```
+
+Con este espacio de búsqueda, el grid search ajustará todos los modelos KNN con un número de vecinos entre `r knn_space$lower` y `r knn_space$upper`. Una vez definido este espacio de búsqueda ya podemos crear el learner para el ajuste de hiperparámetros.
+
+```{r}
+rae_con_hp <- function(learner, desc_inner, measure, space, terminator, tuner, task, desc_outer){
+        learner_ajuste<-AutoTuner$new(
+        learner = learner,
+        resampling = desc_inner,
+        measure = measure,
+        search_space = space,
+        terminator = terminator,
+        tuner = tuner,
+        store_tuning_instance = TRUE)
+        
+        #Evaluamos el learner con auto ajuste
+        ajuste_resample <- resample(task,learner_ajuste,desc_outer,store_models = TRUE)
+        
+        # Para ver el modelo cuyos hiper-pars han sido ajustados (y sus hiper-parámetros):
+        print(ajuste_resample$learners[[1]]$model$learner)
+        
+        return(ajuste_rae <- ajuste_resample$aggregate(measure))
+        
+        
+}
+(knn_ajuste_rae <- rae_con_hp(learner_knn, desc_inner, measure, knn_space, trm("none"), tnr("grid_search"), task_DI, desc_outer))
+```
+
+Como podemos apreciar en la salida de R de arriba, el modelo elegido ha sido el que tiene $k=20$
+
+\subsubsection{rpart}
+
+Para este modelo vamos a usar un random search a la hora de hacer el ajuste, que elige al azar un valor del esapcio de búsqueda y se va moviendo en un radio alrededor del mismo hasta un criterio de parada que vamos a definir con el parámetro `terminator` de la función Autotuner y elige el que mejor puntuación saque en la métrica seleccionada, en este caso el RAE.
+
+
+Ya que el desc_inner es el mismo que para KNN, vamos a reutilizarlo, así que ahora crearemos el espacio de búsqueda, que en este caso será sobre dos hiperparámetros, `minsplit`, que es el mínimo de divisiones que va a hacer el árbol y `maxdepth`, que es la profundidad máxima del árbol.
+
+```{r}
+rpart_space <- ps(
+  minsplit = p_int(lower = 5, upper = 20),
+  maxdepth = p_int(lower = 2, upper = 30)
+)
+```
+
+En este caso usaremos un espacio en el que `minsplit` vaya de `r rpart_space$lower[1]` a `r rpart_space$upper[1]` y `maxdepth` irá de `r rpart_space$lower[2]` a `r rpart_space$upper[2]`
+```{r}
+(rpart_ajuste_rae <- rae_con_hp(learner_rpart, desc_inner, measure, rpart_space, trm("evals", n_evals = 10), tnr("random_search"), task_DI, desc_outer))
+```
+
+En este caso, el modelo óptimo ha resultado ser el que tiene $\text{minsplit}=5$ y $\text{maxdepth}=3$, con un RAE de `r rpart_ajuste_rae`.
+
+\subsubsection{Random forest}
+
+En este caso ajustaremos los hiperparámetros `ntree`, que controla el número de árboles que se van a ajustar, y `maxnodes`, que es equivalente a `maxdepth`.
+
+```{r}
+RF_space <- ps(
+  ntree = p_int(lower = 400, upper = 600),
+  maxnodes = p_int(lower = 2, upper = 6)
+)
+```
+
+En este caso usaremos un espacio en el que `ntree` vaya de `r RF_space$lower[1]` a `r RF_space$upper[1]` y `maxdepth` irá de `r RF_space$lower[2]` a `r RF_space$upper[2]`
+```{r}
+(RF_ajuste_rae <- rae_con_hp(learner_RF, desc_inner, measure, RF_space, trm("evals", n_evals = 10), tnr("random_search"), task_DI, desc_outer))
+```
+
+El mejor modelo que ha encontrado entre estos ha sido el que tiene $\text{ntree}=497$ y $\text{maxnodes}=6$, con un RAE de `r RF_ajuste_rae`.
+
+\subsubsection{SVM}
+
+Para estos modelos, lineal y radial, también usaremos random search.
+
+Vamos con el lineal. Primero creamos es espacio de búsqueda con el hiperparámetro `cost`.
+
+```{r}
+svm_lin_space <- ps(
+  cost = p_dbl(lower = 1, upper = 20),
+  kernel = p_fct(levels = "linear")
+)
+```
+
+En este caso usaremos un espacio en el que `cost` vaya de `r svm_lin_space$lower[1]` a `r svm_lin_space$upper[1]`
+```{r}
+(svm_lin_ajuste_rae <- rae_con_hp(learner_svm_lin, desc_inner, measure, svm_lin_space, trm("evals", n_evals = 10), tnr("random_search"), task_DI, desc_outer))
+```
+Para el radial, además de `cost`, vamos a ajustar `gamma`
+```{r}
+svm_rad_space <- ps(
+  cost = p_dbl(lower = 1, upper = 20),
+  gamma = p_dbl(lower = 1, upper = 20),
+  kernel = p_fct(levels = "radial")
+)
+```
+
+En este caso usaremos un espacio en el que `cost` vaya de `r svm_rad_space$lower[1]` a `r svm_rad_space$upper[1]`
+```{r}
+(svm_rad_ajuste_rae <- rae_con_hp(learner_svm_rad, desc_inner, measure, svm_rad_space, trm("evals", n_evals = 10), tnr("random_search"), task_DI, desc_outer))
+```
+
+\subsubsection{comparación}
+
+Ahora vamos a añadir estos nuevos valores de RAE a la tabla anterior
+
+\begin{center}
+\begin{tabular}{ |c|c|c|c|c|c|c|c| } 
+\hline
+\textbf{Ajuste hiper-par}           & \textbf{KNN}          & \textbf{Cubist}      &\textbf{rpart}      &\textbf{Randomforest}      &\textbf{Regresión}      &\textbf{SVM lineal}      &\textbf{SVM radial} \\
+ \hline \hline 
+ Sin & `r knn_rae[2]` & `r cubist_rae[2]` & `r rpart_rae[2]` & `r RF_rae[2]` & `r lm_rae[2]` & `r svm_lin_rae[2]` & `r svm_rad_rae[2]` \\
+ \hline
+ Con & `r knn_ajuste_rae` & NA & `r rpart_ajuste_rae` & `r RF_ajuste_rae` & NA & `r svm_lin_ajuste_rae` & `r svm_rad_ajuste_rae`
+ \\
+ \hline
+\end{tabular}
+\end{center}
+
+Con ajuste de hiperparámetros, el mejor modelo es el \emph{svm lineal}, con un $RAE_{svm_lin} = `r svm_lin_ajuste_rae`$. Este valor es prácticamente el mismoq ue el de su versión sin ajuste de hiperparámetros, así que por ahorrar tiempo de computación ahora mismo nuestro modelo elegido sería el \emph{SVM con kernel lineal}.
+
+\subsection{Métodos de ensemble}
+
+\subsubsection{Random forest con Ranger}
+
+Ahora vamos a usar la librería ranger para ajustar el modelo de random forest.
+
+```{r}
+library(ranger)
+
+ranger_RF <- ranger(
+formula   = salida ~ ., 
+data      = datos_imputados, 
+)
+
+RAE <- function(datos,predicciones){
+        rae <- sum(abs(datos - predicciones))/sum(abs(datos - mean(datos)))
+        return(rae)
+}
+
+(ranger_RF_rae <- RAE(datos_imputados$salida, ranger_RF$predictions))
+```
+
+A continuación ajustaremos los hiperparámetros con esta librería.
+
+```{r}
+hyper_grid <- expand.grid(
+  num_trees = seq(400, 600, by = 4),
+  mtry  = seq(2, 6, by = 1),
+  RAE = 0
+)
+
+for(i in 1:nrow(hyper_grid)) {
+  
+  # train model
+  model <- ranger(
+    formula         = salida ~ ., 
+    data            = datos_imputados, 
+    num.trees       = hyper_grid$num_trees[i],
+    mtry =hyper_grid$node_size[i]
+  )
+  
+  # add OOB error to grid
+  hyper_grid$RAE[i] <- RAE(datos_imputados$salida, model$predictions)
+}
+
+```
+
+\section{Conclusión}
+
+Como ya habíamos comentado antes, el mejor modelo ha resultado ser, tanto por RAE como por tiempo de computación, el modelo de SVM lineal sin ajuste de hiperparámetros, así que vamos a guardarlo en un archivo y a predecir los datos de competición.
+
+```{r}
+learner_svm_lin$train(task_DI_train)
+save(learner_svm_lin, file = "modelo final.rds")
+pred_comp <- learner_svm_lin$predict_newdata(datos_compet)
+save(pred_comp, file = "predicciones finales.txt")
 ```
 
 

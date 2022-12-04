@@ -1,0 +1,150 @@
+---
+title: "Untitled"
+output: html_document
+date: "2022-11-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(mlr3)
+library(mlr3verse)
+library(mlr3learners)
+library(mlr3extralearners)
+library(mlr3filters)
+library(paradox)
+library(mlr3tuning)
+library(mlr3viz)
+library(mlr3pipelines)
+library(NADIA)
+```
+
+
+\section{SVM}
+
+
+\subsection{Introducción teórica}
+
+Al ser un clasificador binario supervisado, la máquina de vectores de soporte tiene el propósito de identificar un límite de separación (lineal o de otro tipo) en un espacio de elementos de tal manera que las observaciones posteriores se puedan clasificar automáticamente en grupos separados. Este límite de separación puede ser una línea unidimensional, como un plano o hiperplano, dependiendo de la dimensión en la que esté trabajando. En este caso, en el que queremos predecir la radiación solar, vamos a trabajar en un plano bidimensional.\
+Son posibles muchas fronteras de decisión y la frontera de decisión debe estar tan lejos de ambas clases como sea posible, intentando de maximizar el margin. Eso da lugar a la frontera con mejor capacidad de generalización. La ubicación de los hiperplanos depende completamente de la ubicación de los vectores de soporte. Al mover un vector de soporte, el hiperplano se mueve de su ubicación original a una nueva ubicación. El desplazamiento de un vector no compatible no tiene ningún impacto en el hiperplano.\
+El algoritmo SVM puede aprender límites de decisión entre clases que no son linealmente separables. Puede agregar otra dimensión a los datos, para encontrar una forma lineal de separar los datos no lineales. La dimensión extra se llama kernel (es decir, el producto escalar de los vectores en el espacio transformado), se puede imaginar como un "estiramiento" de datos en una tercera dimensión. Esta dimensión adicional le permite separar linealmente los datos. Cuando este hiperplano se proyecta sobre las dos dimensiones originales, aparece como un límite de decisión curvo. El algoritmo para encontrar el kernel utiliza una transformación matemática de los datos llamada función kernel, hay varias funciones del kernel y cada una de las cuales aplica una transformación diferente a los datos y es adecuada para encontrar límites de decisión lineales para diferentes situaciones:\
+\
+- Kernel lineal \
+- Kernel polinómico \
+- Kernel radial, gausiano \
+
+La elección de la función del kernel es un hiperparámetro categórico. Por lo tanto, el mejor enfoque para elegir el kernel de mejor rendimiento es con la optimización de hiperparámetros. El algoritmo SVM tiene varios hiperparámetros para ajustar, pero los más importantes a considerar son:
+- El kernel \
+- El hiperparámetro de grado, que controla qué tan "flexible" será el límite de decisión para el núcleo polinómico \
+- el costo del hiperparámetro o C, que controla qué tan "duro" o "blando" es el margen \
+- El hiperparámetro gamma, que controla cuánta influencia tienen los casos individuales en la posición del límite de decisión\
+
+\subsection{SVM sin ajuste de hiper-parámetros}
+
+Ahora vamos a construir el primer modelo SVM sin ajuste de hiper-parámetros, es decir, con los hiper-parámetros de default.
+
+En principio, decidimos por el caso del SVM con el kernel lineal:
+Lo primero será crear el objeto learner para este modelo
+```{r}
+learner_svm0 <- lrn("regr.svm", kernel="linear", type="eps-regression")
+learner_svm0$train(task = task_DI_train)
+svm_predict <- learner_svm0$predict(task = task_DI_test)
+(svm_rae <- svm_predict$score(measure))
+```
+Como podemos ver, el **Error Absouto Relativo (RAE)** para este modelo SVM con kernel lineal sin ajustar hiperparámetros es de 0.3453. 
+
+Ahora veamos cómo cambia el valor obtenido previamente, cambiando el fipo de kernel con el kernel radial: 
+
+```{r}
+learner_svm <- lrn("regr.svm", kernel="radial", type="eps-regression")
+learner_svm$train(task = task_DI_train)
+svm_predict <- learner_svm$predict(task = task_DI_test)
+(svm_rae <- svm_predict$score(measure))
+```
+El valor del **Error Absouto Relative (RAE)** no varía mucho, de hecho es ligeramente superior al anterior, con un valor de 0.351.
+
+\subsection{SVM con ajuste de hiper-parámetros}
+
+Ahora ajustamos este modelo ajustando también los hiperparámetros:
+Al principio vamos a crear el nuevo modelo para hacer la evaluación de los hiperparámetros, para la que usaré un **HoldOut** de ratio $\frac{2}{3}$ para la muestra de test.
+
+```{r}
+desc_outer <-rsmp("holdout", ratio=2/3)
+set.seed(0)
+desc_outer$instantiate(task_DI_train)
+measure<-  msr("regr.rmse")
+svm_resample <- resample(task_DI_train, learner_svm, desc_outer)
+svm_rmse <- svm_resample$aggregate(measure)
+```
+
+Evaluacion de los hiper-parametros (inner): holdout 
+
+```{r}
+desc_inner <- rsmp("holdout", ratio=2/3)
+```
+
+Aquì vamos a definir del espacio de busqueda para cada parametro, el cost y la gamma:
+
+```{r}
+svm_space <- ps(
+  cost=p_dbl(lower=-10, upper=10, trafo=function(x) 10^x), 
+  gamma= p_dbl(lower=-10, upper=-10, trafo=function(x) 10^x) 
+)
+generate_design_random(svm_space,100)
+```
+
+Vamos a definir el terminador con numero de evaluaciones 30, para  usar el metodo de random search que busca exhaustivamente por todo el espacio de hiperparámetros dado los mejores hiperparámetros posibles:
+
+```{r}
+terminator <- trm("evals", n_evals=30)
+tuner <- tnr("random_search")
+```
+
+Una vez hecho el tuner con el diseño de random search, ya podemos entrenar el learner con el ajuste de hiperparámetros y comprobar si ha bajado o ha subido el RAE con respecto al modelo sin ajuste de hiperparámetros.  \
+Nuevo learner que se autoajusta sus hiper-par:
+
+```{r}
+svm_ajuste <- AutoTuner$new(
+  learner= learner_svm,
+  resampling=desc_inner, 
+  measure= measure, 
+  search_space= svm_space,
+  terminator= terminator, 
+  tuner=tuner,
+  store_tuning_instance = TRUE
+)
+```
+
+Evaluamos el learner con su autoajuste de hiper-parametros
+
+```{r}
+lgr::get_logger("mlr3")$set_threshold("warn")
+lgr::get_logger("bbotk")$set_threshold("warn")
+set.seed(0)
+svm_ajuste_resample <- resample(task_DI_train, svm_ajuste, desc_outer, store_models = TRUE)
+svm_ajuste_rmse <- svm_ajuste_resample$aggregate(measure)
+svm_ajuste_rmse
+```
+
+\section{Regresion lineal multipla}
+
+\subsection{Introducción teórica}
+
+La idea principal de la regresión lineal múltiple es llenar la falta de información que provoca una distorsión en la correcta identificación de la variable y. En otras palabras, la regresión con múltiples regresores le permite medir el efecto de una variable específica $x_i$ sobre la variable $y$, manteniendo constantes las otras variables independientes. Formalmente, el modelo de regresión lineal múltiple incluye varios regresores $x_i$ y asocia a cada regresor un coeficiente $\beta_i$. El coeficiente $\beta_1$, por ejemplo, representa el cambio esperado de la variable dependiente y asociado con un cambio de unidad de $x_1$, manteniendo constantes los otros regresores.
+La regresión múltiple es una extensión de la regresión lineal en relación entre más de dos variables. En la relación lineal simple tenemos un predictor y una variable de respuesta, pero en regresión múltiple tenemos más de una variable predictora y una variable de respuesta.
+Los coeficientes del modelo de regresión lineal múltiple se pueden estimar utilizando el estimador clásico OLS (ordinary least squares), también conocido como el "estimador de mínimos cuadrados ordinarios". Los mínimos cuadrados ordinarios son un método muy eficaz para estimar la intersección y la pendiente de la línea de regresión. Este estimador, de hecho, determina los coeficientes beta eligiendo aquellos que minimizan la suma de los cuadrados de los errores.
+
+\subsection{Regresion multipla sin ajuste de hiper-parámetros}
+
+Vamos a crear nuestro nuevo modelo haciendo regresión lineal múltiple en la variable de respuesta *salida* con respecto a todas las demás covariables:
+
+```{r}
+regrlm <- lm(salida~. , datos_imputados )
+predict_regrlm<- predict(regrlm)
+sum(abs(datos_imputados$salida-predict_regrlm)) / sum(abs(datos_imputados$salida - mean(datos_imputados$salida)))
+```
+
+Vemos cómo el valor del **Error Absouto Relative (RAE)** es 0.3601, valor superior a los valores obtenidos anteriormente con el ajuste del modelo de máquina vectorial de soporte.

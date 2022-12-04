@@ -1,0 +1,44 @@
+---
+title: ""
+author: ""
+date: ""
+geometry: "left=3cm,right=3cm,top=3cm,bottom=3cm"
+header_includes:
+ - \usepackage{longtable}
+ - \usepackage{lscape}
+output: 
+        pdf_document:
+                includes:
+                        in_header: "wrap-code.tex"
+                        before_body: "portada.sty"
+                toc: true
+                toc_depth: 6
+                number_sections: true
+institute: "Universidad Carlos III de Madrid"
+documentclass: "article"
+papersize: a4
+linestrech: 1.5
+fontsize: 11pt
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, message=FALSE, warning=FALSE}
+library(tinytex)
+```
+
+
+\begin{center}
+\begin{tabular}{ |c|c|c|c|c|c|c| } 
+\hline
+\textbf{Ajuste hiper-par}           & \textbf{KNN}          & \textbf{Cubist}      &\textbf{rpart}      &\textbf{Regresión}      &\textbf{SVM lineal}      &\textbf{SVM radial} \\
+ \hline \hline 
+ Sin & `r 20` & `r 20` & `r 20` & `r 20` & `r 20` & `r 20` 
+ 
+ \\
+ \hline
+\end{tabular}
+\end{center}

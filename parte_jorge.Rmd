@@ -11,6 +11,7 @@ output:
                 includes:
                         in_header: "wrap-code.tex"
                         before_body: "portada.sty"
+                toc: true
                 toc_depth: 6
                 number_sections: true
 institute: "Universidad Carlos III de Madrid"
@@ -40,7 +41,20 @@ library(NADIA)
 ```
 
 
+\begin{landscape}
+\begin{longtable}[c]{llll}
+\hline
+\textbf{Variable}           & \textbf{Tipo}          & \textbf{Descripción}      &\textbf{Unidades}                                   \\ \hline
+\endhead
+%
+\hline
+\endfoot
+%
+\endlastfoot
+%
 
+\end{longtable}
+\end{landscape}
 
 
 
