@@ -183,8 +183,6 @@ practica_1_task <- as_task_regr(datos_disp, target = "salida", id = "radiacion")
 A continuación dividiremos el conjunto de datos `datos_disp` en particiones de entrenamiento y testeo, correspondiendo los datos de los primeros 9 años a datos de entrenamiento, y los 3 últimos años a validación:
 ```{r}
 set.seed(100430509) # NIA de Marc Pastor
-#source("./info/Ajuste Hiper-parámetros/ResamplingHoldoutOrder.R")
-#desc_inner <- rsmp("holdoutorder", ratio = 6/9)
 desc_outer <- rsmp("custom")
 desc_outer$instantiate(practica_1_task, 
                        train = list(1:(9*365)),
@@ -297,6 +295,7 @@ print(knn_rae)
 Ahora que hemos visto que el método \emph{MissRanger} es el que menos `rae` tiene de los que hemos probado, vamos a extraer los datos de imputados y usarlos para crear una nueva \emph{task} con ellos.
 
 ```{r}
+set.seed(100430509)
 graph_learner_missRanger_trained <- graph_learner$train(practica_1_task)
 datos_imputados <- graph_learner_missRanger_trained$graph_model$pipeops$regr.kknn$learner_model$model
 datos_imputados <- datos_imputados$data
@@ -319,11 +318,13 @@ Lo primero será crear el objeto learner para este modelo.
 ```{r}
 learner_knn <- lrn("regr.kknn")
 rae_sin_hp <- function(learner, train, test, measure){
+        set.seed(100430509)
         learner$train(task = train)
         predict <- learner$predict(task = test)
         rae <- predict$score(measure)
         return(list(predicciones = predict$response, RAE = rae))
 }
+
 
 knn_rae <- rae_sin_hp(learner_knn, task_DI_train,task_DI_test, measure)
 knn_rae[2]
@@ -445,6 +446,7 @@ Con este espacio de búsqueda, el grid search ajustará todos los modelos KNN co
 
 ```{r}
 rae_con_hp <- function(learner, desc_inner, measure, space, terminator, tuner, task, desc_outer){
+        set.seed(100430509)
         learner_ajuste<-AutoTuner$new(
         learner = learner,
         resampling = desc_inner,
@@ -605,15 +607,80 @@ for(i in 1:nrow(hyper_grid)) {
 
 ```
 
+\subsubsection{xgBoost e hyperband}
+
+En este método para ajustar hiperparámetros, hyperband, los hiperparámetros son parámetros ajustables que permiten controlar el proceso de entrenamiento del modelo. El rendimiento del modelo depende en gran medida de los hiperparámetros. El ajuste de hiperparámetros es el proceso de averiguar la configuración de hiperparámetros que da como resultado un rendimiento óptimo.
+La hiperbanda es un método que puede ser mucho más rápido en algunos casos que otros algoritmos de optimización bayesiana que cubren una variedad de problemas de aprendizaje profundo basados en kernel. Este método parece ser muy útil en problemas de naturaleza no estocástica. El concepto detrás de este método es asignar uniformemente un presupuesto B a un conjunto de posibles configuraciones de hiperparámetros, evaluar el rendimiento de todas las configuraciones, eliminar la peor mitad y hasta que solo quede una configuración. Dado un presupuesto B finito, los recursos B/N están distribuidos en promedio entre configuraciones, pero no está claro si se deben considerar muchas configuraciones B con un tiempo de formación promedio bajo o unas pocas B con un tiempo de entrenamiento alto.
+La hiperbanda considera varios valores posibles de n dado un B fijo, esencialmente realizando una búsqueda de cuadrícula en un valor permitido de n. Cada valor de n está asociado con un recurso mínimo r que se asigna a todas las configuraciones que se eliminan y un valor mayor que n corresponde a una r menor y, por lo tanto, a una parada temprana más violenta.
+
+Vamos a usar este sistema con un modelo xgboost, que consiste en ajustar un primer árbol, sacar los residuos y ajustar el resto de árboles a partir de los mismos.
+
+```{r}
+library(mlr3hyperband)
+
+learner_xgboost = lrn("regr.xgboost",
+  nrounds           = to_tune(p_int(27, 243, tags = "budget")),
+  eta               = to_tune(1e-4, 1, logscale = TRUE),
+  max_depth         = to_tune(1, 20),
+  colsample_bytree  = to_tune(1e-1, 1),
+  colsample_bylevel = to_tune(1e-1, 1),
+  lambda            = to_tune(1e-3, 1e3, logscale = TRUE),
+  alpha             = to_tune(1e-3, 1e3, logscale = TRUE),
+  subsample         = to_tune(1e-1, 1)
+)
+
+ajuste_xgboost = tune(
+  method = "hyperband",
+  task = task_DI,
+  learner = learner_xgboost,
+  resampling = desc_inner,
+  measures = measure,
+  eta = 3
+)
+
+learner_xgboost$param_set$values = ajuste_xgboost$result_learner_param_vals
+
+xboost_rae <- rae_sin_hp(learner_xgboost,task_DI_train,task_DI_test,measure)
+xboost_rae[2]
+as.data.table(ajuste_xgboost$archive)
+```
+
+Este modelo se acerca mucho al $RAE_{svm_lin}=`rsvm_lin_rae[[2]]`$ pero, de nuevo, por esfuerzo computacional, vamos a elegir el SVM con kernel lineal
+
 \section{Conclusión}
 
 Como ya habíamos comentado antes, el mejor modelo ha resultado ser, tanto por RAE como por tiempo de computación, el modelo de SVM lineal sin ajuste de hiperparámetros, así que vamos a guardarlo en un archivo y a predecir los datos de competición.
 
 ```{r}
+datos_compet[, variables_character[1]] <- as.factor(datos_compet[, variables_character[1]])
+datos_compet[, variables_character[2]] <- as.factor(datos_compet[, variables_character[2]])
+datos_compet <- datos_compet %>% select(-(all_of(c(variables_numericas_constantes, variables_numericas_muchos_NA))))
+datos_compet <- cbind(rep(1,nrow(datos_compet)), datos_compet)
+names(datos_compet) <- c("salida", names(datos_compet)[-1])
+
+task_prueba <- as_task_regr(datos_compet, target = "salida", id = "compet")
+
+preproc_inicial <- po("removeconstants") %>>% po("encode")
+task_prueba <- preproc_inicial$train(task_prueba)[[1]]
+
+imp <- PipeOpmissRanger$new()
+# learner 
+learner <- lrn('regr.kknn')
+
+graph <- imp %>>% learner
+
+graph_learner <- GraphLearner$new(graph, id = 'missRanger.learner')
+graph_learner$id <-  'missRanger.learner'
+# resampling 
+
+graph_learner$train(task_prueba)
+datos_imputados_compet <- graph_learner$graph_model$pipeops$regr.kknn$learner_model$model
+datos_imputados_compet <- datos_imputados_compet$data
+
 learner_svm_lin$train(task_DI_train)
 save(learner_svm_lin, file = "modelo final.rds")
-pred_comp <- learner_svm_lin$predict_newdata(datos_compet)
-save(pred_comp, file = "predicciones finales.txt")
+pred_comp <- learner_svm_lin$predict_newdata(datos_imputados_compet)
+save(pred_comp$response, file = "predicciones finales.txt")
 ```
 
 
